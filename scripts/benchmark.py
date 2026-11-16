@@ -54,7 +54,10 @@ def main() -> None:
         print(f"Wall time        : {elapsed:.1f} s (includes Python startup)")
         print(f"Throughput       : {n_events / elapsed:,.0f} events/sec")
         print(f"Alerts           : {alerts}")
-        print(f"Detection check  : {'PASS - all planted attacks found, no false positives' if alerts == expected else 'FAIL - expected ' + str(expected)}")
+        ok = alerts == expected
+        print(f"Detection check  : {'PASS - all planted attacks found, no false positives' if ok else 'FAIL - expected ' + str(expected)}")
+        if not ok:
+            sys.exit(1)   # fail the CI job if detection accuracy regresses
     finally:
         if args.keep:
             print(f"Files kept in {work}")

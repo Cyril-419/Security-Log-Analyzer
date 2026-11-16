@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import argparse
 import heapq
+import json
 import sys
 import time
 from pathlib import Path
 
-from .detectors import Thresholds, run_detections
+from .api import analyze_events, make_server
+from .detectors import Thresholds
 from .parsers import parse_file
 from .storage import Store
 
@@ -59,23 +61,26 @@ def cmd_analyze(args) -> int:
     # time-ordered stream without loading everything into memory.
     streams = [parse_file(p, args.format, args.year) for p in paths]
     merged = heapq.merge(*streams, key=lambda e: e.timestamp)
-    counter = {"n": 0}
 
-    def counted(events):
-        for ev in events:
-            counter["n"] += 1
-            yield ev
-
-    n_alerts = store.save_alerts(run_detections(store.save_events(counted(merged)), thresholds))
+    alerts = []
+    result = analyze_events(store.save_events(merged), thresholds, alert_sink=alerts)
+    store.save_alerts(alerts)
     elapsed = time.perf_counter() - start
-
-    n_events = counter["n"]
-    rate = n_events / elapsed if elapsed else 0
-    print(f"Processed {n_events:,} events from {len(paths)} file(s) in {elapsed:.2f}s "
-          f"({rate:,.0f} events/sec) -> {n_alerts} alert(s). DB: {args.db}")
-    print_report(store, color=sys.stdout.isatty() and not args.no_color)
     store.close()
-    return 1 if n_alerts and args.fail_on_alert else 0
+
+    if args.json:
+        result["files"] = [str(p) for p in paths]
+        result["database"] = args.db
+        print(json.dumps(result, indent=2))
+    else:
+        n_events = result["summary"]["events"]
+        rate = n_events / elapsed if elapsed else 0
+        print(f"Processed {n_events:,} events from {len(paths)} file(s) in {elapsed:.2f}s "
+              f"({rate:,.0f} events/sec) -> {len(alerts)} alert(s). DB: {args.db}")
+        store = Store(args.db)
+        print_report(store, color=sys.stdout.isatty() and not args.no_color)
+        store.close()
+    return 1 if alerts and args.fail_on_alert else 0
 
 
 def cmd_report(args) -> int:
@@ -83,8 +88,29 @@ def cmd_report(args) -> int:
         print(f"error: database not found: {args.db}", file=sys.stderr)
         return 2
     store = Store(args.db)
-    print_report(store, color=sys.stdout.isatty() and not args.no_color)
+    if args.json:
+        print(json.dumps({"events": store.count("events"),
+                          "alerts": [dict(zip(("severity", "rule", "src_ip", "first_seen",
+                                                   "event_count", "description"), row))
+                                     for row in store.alerts()]}, indent=2))
+    else:
+        print_report(store, color=sys.stdout.isatty() and not args.no_color)
     store.close()
+    return 0
+
+
+def cmd_serve(args) -> int:
+    server = make_server(args.host, args.port)
+    host, port = server.server_address[:2]
+    print(f"loganalyzer API listening on http://{host}:{port}  (GET /health, POST /analyze)")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print("warning: listening on a non-local address with no authentication", file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        server.server_close()
     return 0
 
 
@@ -105,15 +131,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="failures before a success to flag it")
     a.add_argument("--append", action="store_true",
                    help="add to an existing database instead of starting fresh")
-    a.add_argument("--no-raw",action="store_true", help="don't store raw lines (smaller DB)")
+    a.add_argument("--no-raw", action="store_true", help="don't store raw lines (smaller DB)")
     a.add_argument("--fail-on-alert", action="store_true", help="exit 1 if any alert fires")
     a.add_argument("--no-color", action="store_true")
+    a.add_argument("--json", action="store_true", help="print results as JSON instead of a report")
     a.set_defaults(func=cmd_analyze)
 
     r = sub.add_parser("report", help="print alerts from an existing database")
     r.add_argument("--db", default="results.db")
     r.add_argument("--no-color", action="store_true")
+    r.add_argument("--json", action="store_true", help="print results as JSON")
     r.set_defaults(func=cmd_report)
+
+    s = sub.add_parser("serve", help="run the REST API (GET /health, POST /analyze)")
+    s.add_argument("--host", default="127.0.0.1", help="address to bind (default: 127.0.0.1, local only)")
+    s.add_argument("--port", type=int, default=8080)
+    s.set_defaults(func=cmd_serve)
     return p
 
 

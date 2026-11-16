@@ -35,3 +35,16 @@ class Alert:
     event_count: int
     users: list[str] = field(default_factory=list)
     description: str = ""
+
+    def to_dict(self) -> dict:
+        """JSON-friendly form, used by --json output and the REST API."""
+        return {
+            "rule": self.rule,
+            "severity": self.severity,
+            "src_ip": self.src_ip,
+            "first_seen": self.first_seen.isoformat(),
+            "last_seen": self.last_seen.isoformat(),
+            "event_count": self.event_count,
+            "users": self.users,
+            "description": self.description,
+        }

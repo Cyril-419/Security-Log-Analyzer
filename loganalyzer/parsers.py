@@ -130,15 +130,33 @@ def parse_web(lines: Iterable[str]) -> Iterator[Event]:
 
 
 # ------------------------------------------------------------- auto-detection
-def detect_format(path: Path) -> str:
-    with path.open(encoding="utf-8", errors="replace") as f:
-        head = f.read(4096).lstrip()
+def detect_format_text(text: str) -> str:
+    """Guess the log format from the first few KB of text."""
+    head = text[:4096].lstrip("﻿ \t\r\n")
     if head.startswith("[") or head.startswith("{"):
         return "windows"
     first = head.splitlines()[0] if head else ""
     if _WEB_LINE.match(first):
         return "web"
     return "linux"
+
+
+def detect_format(path: Path) -> str:
+    with path.open(encoding="utf-8", errors="replace") as f:
+        return detect_format_text(f.read(4096))
+
+
+def parse_text(text: str, fmt: str = "auto", year: int | None = None) -> Iterator[Event]:
+    """Parse logs that are already in memory (used by the REST API)."""
+    if fmt == "auto":
+        fmt = detect_format_text(text)
+    if fmt == "windows":
+        return parse_windows(text)
+    if fmt == "linux":
+        return parse_linux(text.splitlines(), year)
+    if fmt == "web":
+        return parse_web(text.splitlines())
+    raise ValueError(f"unknown format: {fmt}")
 
 
 def parse_file(path: str | Path, fmt: str = "auto", year: int | None = None) -> Iterator[Event]:
